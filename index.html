@@ -193,12 +193,8 @@
     }
     function todayLocalKey()    { return localDateKey(new Date().toISOString()); }
     function tomorrowLocalKey() { const d=new Date(); d.setDate(d.getDate()+1); return localDateKey(d.toISOString()); }
-    function fixAbbr(a) {
-      if (!a) return null;
-      const fixed = ABBR_FIX[a] || a;
-      const VALID = new Set(["LAD","ATL","NYY","HOU","BAL","PHI","MIL","TOR","SDP","TEX","SEA","STL","CHC","MIN","CLE","NYM","ARI","SFG","TBR","BOS","DET","KCR","WSN","MIA","LAA","PIT","CIN","COL","CWS","OAK"]);
-      return VALID.has(fixed) ? fixed : null;
-    }
+    // (removed: fixAbbr — unreferenced, and referenced an undefined ABBR_FIX.
+    //  resolveTeamAbbr below is the live abbreviation-normalisation path.)
 
     function countsForStandings(g) {
       if (g._source === "seed") return false;
@@ -326,6 +322,7 @@
     async function fetchLiveGames() {
       const dates = [];
       const today = new Date();
+      // eslint-disable-next-line no-use-before-define -- declared later at module/component scope; this runs only after initialization
       const seasonStart = new Date(REGULAR_SEASON_START);
       // Always fetch from season start — never cap, accurate records all season
       const daysBack = Math.ceil((today - seasonStart) / 86400000) + 1;
@@ -796,6 +793,7 @@
           if (ips>=4.5) return 1.03;
           return 1.06;
         }
+        // eslint-disable-next-line no-use-before-define -- declared later at module/component scope; this runs only after initialization
         const era = KNOWN_ERA[pitcherName];
         if (era!=null&&era<3.0) return 0.97;
         if (era!=null&&era<3.8) return 1.00;
@@ -3231,9 +3229,6 @@ No explanation, no extra text, just the JSON array.`;
         } catch {}
       },[]);
 
-      const CLOSING_LINES_KEY = "mlb_closing_lines";
-      const OPEN_LINES_KEY   = "mlb_open_lines"; // first-seen odds (opening line proxy)
-
       function saveClosingLine(homeAbbr, awayAbbr, dateStr, lineData) {
         const key = `${homeAbbr}|${awayAbbr}|${dateStr}`;
         setStoredLines(prev => {
@@ -3246,6 +3241,7 @@ No explanation, no extra text, just the JSON array.`;
           for (const k of Object.keys(next)) {
             if (next[k].savedAt < cutoff) delete next[k];
           }
+          // eslint-disable-next-line no-use-before-define -- declared later at module/component scope; this runs only after initialization
           try { localStorage.setItem(CLOSING_LINES_KEY, JSON.stringify(next)); } catch {}
           return next;
         });
@@ -3366,11 +3362,13 @@ No explanation, no extra text, just the JSON array.`;
               }
               // Save open line — first-seen odds only, never overwrite
               try {
+                // eslint-disable-next-line no-use-before-define -- declared later at module/component scope; this runs only after initialization
                 const openRaw = localStorage.getItem(OPEN_LINES_KEY);
                 const openLines = openRaw ? JSON.parse(openRaw) : {};
                 const openKey = `${hAbbr}|${aAbbr}|${commenceLocalDate}`;
                 if (!openLines[openKey]) {
                   openLines[openKey] = { ...lineData, savedAt: Date.now() };
+                  // eslint-disable-next-line no-use-before-define -- declared later at module/component scope; this runs only after initialization
                   localStorage.setItem(OPEN_LINES_KEY, JSON.stringify(openLines));
                 }
               } catch {}
@@ -3443,7 +3441,7 @@ No explanation, no extra text, just the JSON array.`;
           const aEdgeG = vegasAProbG != null ? (parseFloat(odds.aWinPct)/100) - vegasAProbG : null;
           const pickHomeG = (hEdgeG != null && aEdgeG != null) ? hEdgeG >= aEdgeG : parseFloat(odds.hWinPct) >= parseFloat(odds.aWinPct);
           const mCorr=isFinal&&g.hScore!=null&&g.aScore!=null?(pickHomeG?g.hScore>g.aScore:g.aScore>g.hScore):null;
-          if (isFinal) setTimeout(() => { const oddsWithRaw = { ...odds, hMLraw: vlOU?.hMLraw ?? odds.hMLraw, aMLraw: vlOU?.aMLraw ?? odds.aMLraw }; recordVsVegas(g, oddsWithRaw, gameCtxMap[g.id]||null); settleAIPick(g); recordH2H(g.home, g.away, g.hScore > g.aScore); }, 0);
+          if (isFinal) setTimeout(() => { const oddsWithRaw = { ...odds, hMLraw: vlOU?.hMLraw ?? odds.hMLraw, aMLraw: vlOU?.aMLraw ?? odds.aMLraw }; Promise.resolve(recordVsVegas(g, oddsWithRaw, gameCtxMap[g.id]||null, teams)).catch(e=>console.error("[recordVsVegas] failed for game",g.id,e)); settleAIPick(g); recordH2H(g.home, g.away, g.hScore > g.aScore); }, 0);
           return {...g,odds,isFinal,isLive,total,ouResult:ouR,ouLine:ouLineForResult,modelCorrect:mCorr};
         }).filter(Boolean).sort((a,b)=>{
           const ord=g=>g.isLive?0:(!g.isFinal&&new Date(g.start_time)>new Date()?1:2);
@@ -3624,11 +3622,14 @@ No explanation, no extra text, just the JSON array.`;
               const closingLine = storedLines[closingKey];
               // For live/final games, always show closing line (locked pre-game odds)
               const displayLine = (isFinal || isLive) ? (closingLine || vl) : vl;
+              // These must precede lockedVegas*Prob below, which falls back to them
+              // whenever no closing line is stored — reading them first threw a TDZ
+              // ReferenceError on exactly that (very common) path.
+              const vegasHProb = vl?.hMLraw != null ? (vl.hMLraw < 0 ? Math.abs(vl.hMLraw)/(Math.abs(vl.hMLraw)+100) : 100/(vl.hMLraw+100)) : null;
+              const vegasAProb = vl?.aMLraw != null ? (vl.aMLraw < 0 ? Math.abs(vl.aMLraw)/(Math.abs(vl.aMLraw)+100) : 100/(vl.aMLraw+100)) : null;
               // Lock bestValueEdge display for live/final to pre-game closing line values
               const lockedVegasHProb = closingLine?.hMLraw != null ? (closingLine.hMLraw < 0 ? Math.abs(closingLine.hMLraw)/(Math.abs(closingLine.hMLraw)+100) : 100/(closingLine.hMLraw+100)) : vegasHProb;
               const lockedVegasAProb = closingLine?.aMLraw != null ? (closingLine.aMLraw < 0 ? Math.abs(closingLine.aMLraw)/(Math.abs(closingLine.aMLraw)+100) : 100/(closingLine.aMLraw+100)) : vegasAProb;
-              const vegasHProb = vl?.hMLraw != null ? (vl.hMLraw < 0 ? Math.abs(vl.hMLraw)/(Math.abs(vl.hMLraw)+100) : 100/(vl.hMLraw+100)) : null;
-              const vegasAProb = vl?.aMLraw != null ? (vl.aMLraw < 0 ? Math.abs(vl.aMLraw)/(Math.abs(vl.aMLraw)+100) : 100/(vl.aMLraw+100)) : null;
               const hValueEdge = vegasHProb != null ? (hWin/100) - vegasHProb : null;
               const aValueEdge = vegasAProb != null ? (aWin/100) - vegasAProb : null;
               // Best value pick: whichever side has the most positive edge vs Vegas
@@ -3705,11 +3706,13 @@ No explanation, no extra text, just the JSON array.`;
                   {(()=>{
                     const sim = odds.sim;
                     const modelOU  = +odds.ou.toFixed(1);
+                    // vk/vl must precede vegasOUForProb, which reads vl?.ou when no
+                    // displayLine is present — otherwise that path throws a TDZ error.
+                    const vk = `${game.home}|${game.away}`;
+                    const vl = vegasOdds[vk];
                     // Use Vegas line for over probability — what % of sims beat the Vegas number
                     const vegasOUForProb = parseFloat(displayLine?.ou || vl?.ou || modelOU);
                     const overProb = sim ? (simOverProb(sim.totalDist, vegasOUForProb)*100).toFixed(0) : "--";
-                    const vk = `${game.home}|${game.away}`;
-                    const vl = vegasOdds[vk];
                     const actualMargin = isFinal && hScore!=null && aScore!=null ? hScore - aScore : null;
                     const actualTotal  = isFinal && hScore!=null && aScore!=null ? hScore + aScore : null;
                     // ML: track value pick (team with edge vs Vegas) not just model favorite
@@ -4054,6 +4057,11 @@ No explanation, no extra text, just the JSON array.`;
     const VS_VEGAS_KEY = "mlb_vs_vegas";
     const CURRENT_SEASON = new Date().getFullYear().toString();
     const REGULAR_SEASON_START = "2026-03-28";
+    // Line storage keys — module scope so both GamblingPage and recordVsVegas
+    // can reach them. Previously declared inside GamblingPage, which made every
+    // read from recordVsVegas throw a swallowed ReferenceError.
+    const CLOSING_LINES_KEY = "mlb_closing_lines";
+    const OPEN_LINES_KEY    = "mlb_open_lines"; // first-seen odds (opening line proxy)
 
     const VS_VEGAS_SCHEMA_VERSION = "v2-rl-ai";
 
@@ -4202,13 +4210,19 @@ No explanation, no extra text, just the JSON array.`;
           return d;
         }
       } catch {}
-      return { season: CURRENT_SEASON, games: [] };
+      // Must carry schemaVersion: loadVsVegas wipes any payload whose version
+      // doesn't match, so omitting it here made every saved record self-erase
+      // on the following read.
+      return { season: CURRENT_SEASON, games: [], schemaVersion: VS_VEGAS_SCHEMA_VERSION };
     }
 
     async function saveVsVegas(data) {
       try {
         if (data.games.length > 1000) data.games = data.games.slice(-1000);
-        await window.storage.set(VS_VEGAS_KEY, JSON.stringify(data));
+        // Stamp the version on every write so no code path can persist a
+        // payload that the next load would discard.
+        const payload = { ...data, season: data.season ?? CURRENT_SEASON, schemaVersion: VS_VEGAS_SCHEMA_VERSION };
+        await window.storage.set(VS_VEGAS_KEY, JSON.stringify(payload));
       } catch {}
     }
 
@@ -4243,7 +4257,10 @@ No explanation, no extra text, just the JSON array.`;
       await saveVsVegas(data);
     }
 
-    async function recordVsVegas(game, odds, ctx=null) {
+    // `teams` is passed in from the caller — recordVsVegas previously called
+    // GamblingPage's getT(), which is out of scope here, so minGP was always 0.
+    async function recordVsVegas(game, odds, ctx=null, teams=null) {
+      const lookupTeam = abbr => (teams||[]).find(t=>t.id===abbr) || null;
       const gameDate = localDateKey(game.start_time);
       if (gameDate < REGULAR_SEASON_START) return;
       if (game.gameType && game.gameType !== "R" && game.gameType !== "P") return;
@@ -4311,28 +4328,9 @@ No explanation, no extra text, just the JSON array.`;
         ? (total === ouLine ? null   // push — exclude from accuracy
            : modelPickOver ? total > ouLine : total < ouLine)
         : null;
-      // Always prefer closing line ML over live odds at record time (alignment fix)
-      const vegasML = pickHome
-        ? (closingLineData?.hML || odds.hML || null)
-        : (closingLineData?.aML || odds.aML || null);
-      const modelRLLine = pickHome ? (odds.hRL || null) : (odds.aRL || null);
-
-      // Pull projected runs — prefer direct property, fall back to sim
-      const projHomeRuns = odds.hRuns != null ? +odds.hRuns : (odds.sim ? +odds.sim.hAvgRuns : null);
-      const projAwayRuns = odds.aRuns != null ? +odds.aRuns : (odds.sim ? +odds.sim.aAvgRuns : null);
-      // Store simulation confidence bands (Monte Carlo distribution width)
-      const sim = odds.sim;
-      const simOverPct  = sim && ouLine ? +(simOverProb(sim.totalDist, ouLine)*100).toFixed(1) : null;
-      const simRLCover  = sim ? +(sim.rlCoverPct).toFixed(1) : null;   // % sims fav covers -1.5
-      const simWinPct   = +(modelFavPct).toFixed(1);                    // already stored
-      // Distribution width: % of sims within 1 run of mean (tighter = more certain)
-      const simTotal = sim?.totalDist?.reduce((s,v)=>s+v,0) || 0;
-      const projMean = projHomeRuns && projAwayRuns ? +(projHomeRuns+projAwayRuns).toFixed(1) : null;
-      const simWithin1 = (sim && projMean && simTotal > 0)
-        ? +((sim.totalDist.slice(Math.max(0,Math.floor(projMean)-1), Math.ceil(projMean)+2).reduce((s,v)=>s+v,0)/simTotal)*100).toFixed(1)
-        : null;
-
-      // CLV: compare model's implied probability vs closing line probability
+      // Stored open/closing lines. These MUST be resolved before vegasML below —
+      // they were previously declared further down, so reading them here threw a
+      // TDZ ReferenceError that killed this whole function on every new game.
       const clvKey = `${game.home}|${game.away}|${localDateKey(game.start_time)}`;
       const openLineData = (() => {
         try {
@@ -4368,6 +4366,30 @@ No explanation, no extra text, just the JSON array.`;
           return cl[alt2] || cl[alt3] || null;
         } catch{return null;}
       })();
+
+      // Always prefer closing line ML over live odds at record time (alignment fix)
+      const vegasML = pickHome
+        ? (closingLineData?.hML || odds.hML || null)
+        : (closingLineData?.aML || odds.aML || null);
+      const modelRLLine = pickHome ? (odds.hRL || null) : (odds.aRL || null);
+
+      // Pull projected runs — prefer direct property, fall back to sim
+      const projHomeRuns = odds.hRuns != null ? +odds.hRuns : (odds.sim ? +odds.sim.hAvgRuns : null);
+      const projAwayRuns = odds.aRuns != null ? +odds.aRuns : (odds.sim ? +odds.sim.aAvgRuns : null);
+      // Store simulation confidence bands (Monte Carlo distribution width)
+      const sim = odds.sim;
+      const simOverPct  = sim && ouLine ? +(simOverProb(sim.totalDist, ouLine)*100).toFixed(1) : null;
+      const simRLCover  = sim ? +(sim.rlCoverPct).toFixed(1) : null;   // % sims fav covers -1.5
+      const simWinPct   = +(modelFavPct).toFixed(1);                    // already stored
+      // Distribution width: % of sims within 1 run of mean (tighter = more certain)
+      const simTotal = sim?.totalDist?.reduce((s,v)=>s+v,0) || 0;
+      const projMean = projHomeRuns && projAwayRuns ? +(projHomeRuns+projAwayRuns).toFixed(1) : null;
+      const simWithin1 = (sim && projMean && simTotal > 0)
+        ? +((sim.totalDist.slice(Math.max(0,Math.floor(projMean)-1), Math.ceil(projMean)+2).reduce((s,v)=>s+v,0)/simTotal)*100).toFixed(1)
+        : null;
+
+      // CLV: compare model's implied probability vs closing line probability
+      // (openLineData / closingLineData / clvKey are resolved above, before vegasML)
 
       // Model's implied probability for the pick
       const modelPickProb = pickHome ? (mHWin/100) : (mAWin/100);
@@ -4409,8 +4431,8 @@ No explanation, no extra text, just the JSON array.`;
       const homeSlot = ctx?.sp?.homeSlot ?? 2;
       const awaySlot = ctx?.sp?.awaySlot ?? 2;
       // Record games played at time of game for 40-game threshold filtering
-      const homeGP = (()=>{ try { const t=getT(game.home); return t?(t.wins||0)+(t.losses||0):0; } catch{return 0;}})();
-      const awayGP = (()=>{ try { const t=getT(game.away); return t?(t.wins||0)+(t.losses||0):0; } catch{return 0;}})();
+      const homeGP = (()=>{ try { const t=lookupTeam(game.home); return t?(t.wins||0)+(t.losses||0):0; } catch{return 0;}})();
+      const awayGP = (()=>{ try { const t=lookupTeam(game.away); return t?(t.wins||0)+(t.losses||0):0; } catch{return 0;}})();
       const minGP  = Math.min(homeGP, awayGP); // both teams must have 40+ games
       const spRegime = Math.min(homeSlot, awaySlot) <= 1 ? "ace" :
                        Math.max(homeSlot, awaySlot) >= 3 ? "backend" : "mid";
@@ -4595,22 +4617,25 @@ No explanation, no extra text, just the JSON array.`;
             ouLosses.slice(0,5).forEach((g,i) => setTimeout(()=>autoTagOULoss(g), (i+1)*2500));
           }
         }
-        async function handleTag(gameId, tagId) {
-          const data = await loadVsVegas();
-          const g = data.games.find(g => g.id === gameId);
-          if (!g) return;
-          const existing = g.errorTags || [];
-          g.errorTags = existing.includes(tagId)
-            ? existing.filter(t => t !== tagId)
-            : [...existing, tagId];
-          await saveVsVegas(data);
-          const fresh = await loadVsVegas();
-          setVvData(fresh);
-        }
         load();
         const id = setInterval(load, 60000);
         return () => clearInterval(id);
       },[]);
+
+      // Must live at component scope — this was previously declared inside the
+      // effect above, so the game-log tag buttons threw a ReferenceError on click.
+      async function handleTag(gameId, tagId) {
+        const data = await loadVsVegas();
+        const g = data.games.find(g => g.id === gameId);
+        if (!g) return;
+        const existing = g.errorTags || [];
+        g.errorTags = existing.includes(tagId)
+          ? existing.filter(t => t !== tagId)
+          : [...existing, tagId];
+        await saveVsVegas(data);
+        const fresh = await loadVsVegas();
+        setVvData(fresh);
+      }
 
       const games   = vvData?.games || [];
       const settled = games.filter(g => g.mlHit != null);
@@ -4624,8 +4649,10 @@ No explanation, no extra text, just the JSON array.`;
       const derivedEdge = g => Math.min(10, Math.max(1, Math.round(Math.abs((g.modelFavPct||50) - 50) / 2.5)));
       const settledValid = settled.filter(g => derivedEdge(g) >= PERF_MIN_EDGE);
       const settledAll   = settled; // kept for sample counts and CLV (edge-agnostic)
-      // settledEarly kept for future use when 40gp threshold becomes meaningful (late April+)
-      // const settledEarly = settled.filter(g => g.minGP != null && g.minGP < 40);
+      // Games played before both teams reached 40 GP. Still referenced by the
+      // empty-state copy below, so it must stay defined — leaving it commented
+      // out made ModelPerfPage throw whenever there were no qualifying ML games.
+      const settledEarly = settled.filter(g => g.minGP != null && g.minGP < 40);
       const mlGames = settledValid.filter(g => g.mlHit  != null);
       const rlGames = settledValid.filter(g => g.rlHit  != null);
       const ouGames = settledValid.filter(g => g.ouHit  != null);
@@ -5858,235 +5885,6 @@ No explanation, no extra text, just the JSON array.`;
     }
 
     // ── Page: Methodology ─────────────────────────────────────────
-    // ── Page: Predictions vs Actuals ─────────────────────────────
-    function PredictionsPage() {
-      const [vvData, setVvData] = useState(null);
-      const [loading, setLoading] = useState(true);
-      const [filter, setFilter] = useState("all"); // all | ml-hit | ml-miss | ou-over | ou-under
-      const [sortBy, setSortBy] = useState("date");
-      const [page, setPage] = useState(0);
-      const PER_PAGE = 20;
-
-      useEffect(()=>{
-        async function load() {
-          setLoading(true);
-          const vv = await loadVsVegas();
-          setVvData(vv);
-          setLoading(false);
-          setAdaptiveParams(loadAdaptiveParams());
-          // Batch tag any untagged losses in background
-          const losses = (vv.games||[]).filter(g=>g.mlHit===false);
-          if (losses.length > 0) {
-            batchTagLosses(losses, 5).then(n => {
-              if (n > 0) loadVsVegas().then(fresh => setVvData(fresh));
-            });
-          }
-          // Batch-tag O/U losses
-          const ouLosses = (vv.games||[]).filter(g=>g.ouHit===false&&!g.ouErrorTags?.length);
-          if (ouLosses.length > 0) {
-            ouLosses.slice(0,5).forEach((g,i) => setTimeout(()=>autoTagOULoss(g), (i+1)*2500));
-          }
-        }
-        async function handleTag(gameId, tagId) {
-          const data = await loadVsVegas();
-          const g = data.games.find(g => g.id === gameId);
-          if (!g) return;
-          const existing = g.errorTags || [];
-          g.errorTags = existing.includes(tagId)
-            ? existing.filter(t => t !== tagId)
-            : [...existing, tagId];
-          await saveVsVegas(data);
-          const fresh = await loadVsVegas();
-          setVvData(fresh);
-        }
-        load();
-        const id = setInterval(load, 60000);
-        return () => clearInterval(id);
-      },[]);
-
-      const games = (vvData?.games || []).filter(g => g.mlHit != null);
-
-      const filtered = games.filter(g => {
-        if (filter === "ml-hit")   return g.mlHit === true;
-        if (filter === "ml-miss")  return g.mlHit === false;
-        if (filter === "ou-over")  return g.modelOUPick === "OVER";
-        if (filter === "ou-under") return g.modelOUPick === "UNDER";
-        if (filter === "rl-hit")   return g.rlHit === true;
-        if (filter === "rl-miss")  return g.rlHit === false;
-        return true;
-      }).sort((a,b) => sortBy === "date" ? b.settledAt - a.settledAt : 0);
-
-      const totalPages = Math.ceil(filtered.length / PER_PAGE);
-      const pageGames  = filtered.slice(page * PER_PAGE, (page+1) * PER_PAGE);
-
-      // Summary stats
-      const mlW = games.filter(g=>g.mlHit).length;
-      const rlW = games.filter(g=>g.rlHit).length;
-      const ouW = games.filter(g=>g.ouHit).length;
-      const n   = games.length;
-
-      // Score accuracy — MAE on projected vs actual runs
-      const scoredGames = games.filter(g => g.projHomeRuns != null && g.projAwayRuns != null);
-      const homeMAE = scoredGames.length
-        ? (scoredGames.reduce((s,g) => s + Math.abs(g.projHomeRuns - g.hScore), 0) / scoredGames.length).toFixed(2)
-        : null;
-      const awayMAE = scoredGames.length
-        ? (scoredGames.reduce((s,g) => s + Math.abs(g.projAwayRuns - g.aScore), 0) / scoredGames.length).toFixed(2)
-        : null;
-      const totalMAE = scoredGames.length
-        ? (scoredGames.reduce((s,g) => s + Math.abs((g.projHomeRuns+g.projAwayRuns) - g.total), 0) / scoredGames.length).toFixed(2)
-        : null;
-
-      const Pill = ({label, val, color}) => (
-        <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,padding:"0.6rem 0.8rem",textAlign:"center",flex:1}}>
-          <div style={{fontSize:"0.52rem",letterSpacing:"0.1em",color:C.dim,marginBottom:"0.25rem"}}>{label}</div>
-          <div style={{fontSize:"1.1rem",fontWeight:"bold",color:color||C.gold}}>{val}</div>
-        </div>
-      );
-
-      if (loading) return <div style={{padding:"3rem",textAlign:"center",color:C.muted}}>Loading…</div>;
-
-      return (
-        <div style={{padding:"1.5rem"}}>
-          <SectionHeader>PREDICTIONS VS ACTUALS <LiveBadge/></SectionHeader>
-
-          {/* Summary row */}
-          {n > 0 && (
-            <div style={{display:"flex",gap:"0.5rem",marginBottom:"1rem",flexWrap:"wrap"}}>
-              <Pill label="ML" val={`${mlW}-${n-mlW}`} color={mlW/n>=0.524?C.green:C.red}/>
-              <Pill label="RL" val={`${rlW}-${n-rlW}`} color={rlW/n>=0.524?C.green:C.red}/>
-              <Pill label="O/U" val={`${ouW}-${n-ouW}`} color={ouW/n>=0.524?C.green:C.red}/>
-              {homeMAE && <Pill label="SCORE MAE" val={`±${totalMAE}R`} color={C.muted}/>}
-            </div>
-          )}
-
-          {/* Score accuracy detail */}
-          {scoredGames.length > 0 && (
-            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,padding:"0.7rem 1rem",marginBottom:"1rem",display:"flex",gap:"1.5rem",flexWrap:"wrap"}}>
-              <div style={{fontSize:"0.62rem",color:C.dim,letterSpacing:"0.08em",alignSelf:"center"}}>PROJ SCORE MAE</div>
-              <div style={{textAlign:"center"}}><div style={{fontSize:"0.55rem",color:C.dim}}>HOME</div><div style={{fontSize:"0.85rem",fontWeight:"bold",color:C.muted}}>±{homeMAE}R</div></div>
-              <div style={{textAlign:"center"}}><div style={{fontSize:"0.55rem",color:C.dim}}>AWAY</div><div style={{fontSize:"0.85rem",fontWeight:"bold",color:C.muted}}>±{awayMAE}R</div></div>
-              <div style={{textAlign:"center"}}><div style={{fontSize:"0.55rem",color:C.dim}}>TOTAL</div><div style={{fontSize:"0.85rem",fontWeight:"bold",color:parseFloat(totalMAE)<2?C.green:parseFloat(totalMAE)<3?C.gold:C.red}}>±{totalMAE}R</div></div>
-              <div style={{fontSize:"0.58rem",color:C.dim,alignSelf:"center",marginLeft:"auto"}}>{scoredGames.length} games w/ proj</div>
-            </div>
-          )}
-
-          {/* Filter tabs */}
-          <div style={{display:"flex",gap:"0.3rem",marginBottom:"1rem",flexWrap:"wrap"}}>
-            {[
-              {id:"all",    label:"All"},
-              {id:"ml-hit", label:"ML ✓"},
-              {id:"ml-miss",label:"ML ✗"},
-              {id:"rl-hit", label:"RL ✓"},
-              {id:"rl-miss",label:"RL ✗"},
-              {id:"ou-over",label:"OVER"},
-              {id:"ou-under",label:"UNDER"},
-            ].map(f=>(
-              <button key={f.id} onClick={()=>{setFilter(f.id);setPage(0);}} style={{
-                padding:"0.3rem 0.65rem",borderRadius:4,cursor:"pointer",fontFamily:"inherit",
-                fontSize:"0.68rem",fontWeight:"bold",
-                background:filter===f.id?"rgba(201,168,76,0.15)":C.surface,
-                border:`1px solid ${filter===f.id?C.gold:C.border}`,
-                color:filter===f.id?C.gold:C.muted,
-              }}>{f.label}</button>
-            ))}
-            <div style={{marginLeft:"auto",fontSize:"0.65rem",color:C.dim,alignSelf:"center"}}>{filtered.length} games</div>
-          </div>
-
-          {n === 0 ? (
-            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,padding:"3rem 2rem",textAlign:"center"}}>
-              <div style={{fontSize:"2rem",marginBottom:"0.75rem"}}>🎯</div>
-              <div style={{fontSize:"0.9rem",color:C.muted,marginBottom:"0.5rem"}}>No settled games yet</div>
-              <div style={{fontSize:"0.75rem",color:C.dim}}>Predictions record automatically when games finalize on the Daily Betting Lines tab.</div>
-            </div>
-          ) : (
-            <>
-              {/* Table */}
-              <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:6,overflow:"hidden",marginBottom:"0.5rem"}}>
-                {/* Header */}
-                <div style={{display:"grid",gridTemplateColumns:"2.4rem 3.8rem 4rem 4rem 2.8rem 2.6rem 2.6rem",background:C.header,borderBottom:`1px solid ${C.border}`}}>
-                  {["DATE","MATCHUP","PROJ","ACTUAL","ML","RL","O/U"].map(h=>(
-                    <div key={h} style={{padding:"0.35rem 0.1rem",fontSize:"0.5rem",letterSpacing:"0.03em",color:C.muted,fontWeight:"bold",textAlign:"center"}}>{h}</div>
-                  ))}
-                </div>
-                {pageGames.map((g, i) => {
-                  const favIsHome = g.modelFavTeam === g.home;
-                  const homeWon = g.hScore > g.aScore;
-                  const hasProj = g.projAwayRuns != null && g.projHomeRuns != null;
-                  const totErr  = hasProj ? ((g.projHomeRuns+g.projAwayRuns) - g.total).toFixed(1) : null;
-                  const errColor = e => Math.abs(parseFloat(e)) <= 1 ? C.green : Math.abs(parseFloat(e)) <= 2.5 ? C.gold : C.red;
-                  return (
-                    <div key={g.id} style={{display:"grid",gridTemplateColumns:"2.4rem 3.8rem 4rem 4rem 2.8rem 2.6rem 2.6rem",alignItems:"center",borderBottom:`1px solid ${C.border}`,background:i%2===0?"transparent":"rgba(255,255,255,0.016)"}}>
-                      {/* Date */}
-                      <div style={{padding:"0.35rem 0.05rem",fontSize:"0.55rem",color:C.dim,textAlign:"center",lineHeight:1.2}}>{g.date?.slice(5)||"--"}</div>
-                      {/* Matchup stacked */}
-                      <div style={{padding:"0.28rem 0.1rem"}}>
-                        <div style={{display:"flex",alignItems:"center",gap:"0.12rem",marginBottom:"0.1rem"}}>
-                          <span style={{fontSize:"0.38rem",color:C.dim,flexShrink:0}}>AWY</span>
-                          <span style={{fontSize:"0.64rem",fontWeight:"bold",color:!favIsHome?C.gold:C.muted}}>{g.away}</span>
-                        </div>
-                        <div style={{display:"flex",alignItems:"center",gap:"0.12rem"}}>
-                          <span style={{fontSize:"0.38rem",color:C.dim,flexShrink:0}}>HME</span>
-                          <span style={{fontSize:"0.64rem",fontWeight:"bold",color:favIsHome?C.gold:C.muted}}>{g.home}</span>
-                        </div>
-                      </div>
-                      {/* Projected score */}
-                      <div style={{padding:"0.28rem 0.08rem",textAlign:"center"}}>
-                        {hasProj ? (
-                          <>
-                            <div style={{fontSize:"0.64rem",fontWeight:"bold",color:C.gold,whiteSpace:"nowrap"}}>{g.projAwayRuns}-{g.projHomeRuns}</div>
-                            <div style={{fontSize:"0.42rem",color:C.dim,letterSpacing:"0.02em"}}>awy-hme</div>
-                            <div style={{fontSize:"0.42rem",color:C.dim}}>OU {g.projTotal}</div>
-                          </>
-                        ) : (
-                          <div style={{fontSize:"0.6rem",color:C.dim}}>--</div>
-                        )}
-                      </div>
-                      {/* Actual score + error */}
-                      <div style={{padding:"0.28rem 0.08rem",textAlign:"center"}}>
-                        <div style={{fontSize:"0.64rem",fontWeight:"bold",color:homeWon?C.green:C.text,whiteSpace:"nowrap"}}>{g.aScore}-{g.hScore}</div>
-                        <div style={{fontSize:"0.42rem",color:C.dim,letterSpacing:"0.02em"}}>awy-hme</div>
-                        {hasProj && (
-                          <div style={{fontSize:"0.46rem",color:errColor(totErr)}}>Δ{parseFloat(totErr)>0?"+":""}{totErr}R</div>
-                        )}
-                      </div>
-                      {/* ML */}
-                      <div style={{textAlign:"center",padding:"0.1rem 0"}}>
-                        <span style={{fontSize:"0.56rem",fontWeight:"bold",color:g.mlHit?C.green:C.red}}>{g.mlHit?"WIN":"LOS"}</span>
-                        <div style={{fontSize:"0.44rem",color:C.dim}}>{g.modelFavTeam}</div>
-                      </div>
-                      {/* RL */}
-                      <div style={{textAlign:"center",padding:"0.1rem 0"}}>
-                        <span style={{fontSize:"0.56rem",fontWeight:"bold",color:g.rlHit?C.green:C.red}}>{g.rlHit?"WIN":"LOS"}</span>
-                        <div style={{fontSize:"0.44rem",color:"transparent"}}>–</div>
-                      </div>
-                      {/* O/U */}
-                      <div style={{textAlign:"center",padding:"0.1rem 0"}}>
-                        <span style={{fontSize:"0.56rem",fontWeight:"bold",color:g.ouHit?C.green:C.red}}>{g.ouHit?"WIN":"LOS"}</span>
-                        <div style={{fontSize:"0.44rem",color:C.dim}}>{g.modelOUPick==="OVER"?"OVR":"UND"}</div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Pagination */}
-              {totalPages > 1 && (
-                <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:"0.5rem",marginBottom:"1rem"}}>
-                  <button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} style={{background:"none",border:`1px solid ${C.border}`,color:C.muted,padding:"0.2rem 0.6rem",borderRadius:3,cursor:"pointer",fontFamily:"inherit",fontSize:"0.75rem",opacity:page===0?0.3:1}}>←</button>
-                  <span style={{fontSize:"0.72rem",color:C.dim}}>{page+1}/{totalPages}</span>
-                  <button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page===totalPages-1} style={{background:"none",border:`1px solid ${C.border}`,color:C.muted,padding:"0.2rem 0.6rem",borderRadius:3,cursor:"pointer",fontFamily:"inherit",fontSize:"0.75rem",opacity:page===totalPages-1?0.3:1}}>→</button>
-                </div>
-              )}
-
-              <div style={{fontSize:"0.62rem",color:C.dim,marginTop:"0.25rem",lineHeight:1.6}}>
-                PROJ = model's projected score · Δ = actual minus projected total · color: green ≤1R, gold ≤2.5R, red &gt;2.5R off
-              </div>
-            </>
-          )}
-        </div>
-      );
-    }
 
     function MethodologyPage() {
       const items=[
@@ -6505,6 +6303,7 @@ No explanation, no extra text, just the JSON array.`;
         if (pullY >= PULL_THRESHOLD && !pullRefreshing) {
           setPullRefreshing(true);
           setPullY(40);
+          // eslint-disable-next-line no-use-before-define -- declared later at module/component scope; this runs only after initialization
           await refresh();
           setPullRefreshing(false);
         }

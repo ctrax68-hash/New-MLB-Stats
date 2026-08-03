@@ -1,0 +1,25 @@
+{
+  "name": "new-mlb-stats",
+  "version": "1.0.0",
+  "description": "R.I.P. BERRYHORSE 🐐 (2017-2018)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ctrax68-hash/new-mlb-stats.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ctrax68-hash/new-mlb-stats/issues"
+  },
+  "homepage": "https://github.com/ctrax68-hash/new-mlb-stats#readme",
+  "devDependencies": {
+    "@babel/core": "^8.0.1",
+    "@babel/preset-react": "^8.0.1",
+    "eslint": "^10.8.0"
+  }
+}
