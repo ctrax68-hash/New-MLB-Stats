@@ -815,18 +815,6 @@
       const aOffAdjusted = aOff * (1 + aAdj.offAdj);
       const hDefAdjusted = hDef * (1 + hAdj.defAdj);
       const aDefAdjusted = aDef * (1 + aAdj.defAdj);
-      // Regime-based SP weight: ace tier has stronger suppression,
-      // volatile/rookie tier has weaker effect (bullpen dominates outcome)
-      // spAdj is positive for good pitchers, negative for bad
-      // Slot 0-1 (ace/solid): amplify SP impact → multiply by 1.4
-      // Slot 2 (average): baseline → multiply by 1.0
-      // Slot 3-4 (back-end/5th): dampen SP impact → multiply by 0.65 (bullpen takes over)
-      function regimeSpMult(spAdj, spSlot) {
-        const regimeScale = spSlot <= 1 ? 1.4 : spSlot <= 2 ? 1.0 : 0.65;
-        return 1 + spAdj * -0.04 * regimeScale;
-      }
-      const hSpMult = regimeSpMult(hSpAdjFinal, hSpSlotFinal);
-      const aSpMult = regimeSpMult(aSpAdjFinal, aSpSlotFinal);
       // Weather and injury multipliers
       const wFactor = ctx?.weather ? weatherRunFactor(ctx.weather) : 1.0;
       // Use roster-aware injury impact if available, else fall back to legacy thin-lineup check
@@ -839,8 +827,18 @@
       const aSpSlotFinal = Math.min(4, awaySpSlot + (aInjImpact?.spSlotAdj || 0));
       const hSpAdjFinal = getSpAdj(home.id, hSpSlotFinal);
       const aSpAdjFinal = getSpAdj(away.id, aSpSlotFinal);
-      const hSpMultFinal = 1+hSpAdjFinal*-0.04;
-      const aSpMultFinal = 1+aSpAdjFinal*-0.04;
+      // Regime-based SP weight: ace tier has stronger suppression,
+      // volatile/rookie tier has weaker effect (bullpen dominates outcome)
+      // spAdj is positive for good pitchers, negative for bad
+      // Slot 0-1 (ace/solid): amplify SP impact → multiply by 1.4
+      // Slot 2 (average): baseline → multiply by 1.0
+      // Slot 3-4 (back-end/5th): dampen SP impact → multiply by 0.65 (bullpen takes over)
+      function regimeSpMult(spAdj, spSlot) {
+        const regimeScale = spSlot <= 1 ? 1.4 : spSlot <= 2 ? 1.0 : 0.65;
+        return 1 + spAdj * -0.04 * regimeScale;
+      }
+      const hSpMultFinal = regimeSpMult(hSpAdjFinal, hSpSlotFinal);
+      const aSpMultFinal = regimeSpMult(aSpAdjFinal, aSpSlotFinal);
       const hExpR9 = Math.sqrt(hOffAdjusted*aDefAdjusted)*park.pf*aSpMultFinal*wFactor*hOffInjMult;
       const aExpR9 = Math.sqrt(aOffAdjusted*hDefAdjusted)*park.pf*hSpMultFinal*wFactor*aOffInjMult;
       const hfaRunBoost = parkHfa*0.5;
@@ -868,6 +866,9 @@
       const dispMult = Math.min(hDisp, aDisp);
       // Park dispersion multiplier: base value + adaptive nudge from feedback system
       const parkDispMult = (park.disp ?? 1.0) + getParkDispNudge(home.id);
+      // Bullpen stress (leverage/usage state) — computed here so it's defined before use below
+      const hBullpenStress  = bullpenStressMultiplier(home.id);
+      const aBullpenStress  = bullpenStressMultiplier(away.id);
       const hVarTotal = Math.min(1.20, hVarMult * parkDispMult * hBullpenStress * (1.0 + (dispMult - 0.55) * 0.25));
       const aVarTotal = Math.min(1.20, aVarMult * parkDispMult * aBullpenStress * (1.0 + (dispMult - 0.55) * 0.25));
       // Guard against NaN/Infinity in variance chain
@@ -885,8 +886,6 @@
       const bullpenERAHome = (() => { try { const db=loadRosterDB(),pd=loadLivePitcherERA(); const rp=Object.values(db).filter(p=>p.teamAbbr===home.id&&(p.role==="RP"||p.role==="CL")&&p.ip>0); let tIP=0,tER=0; for(const p of rp){const l=pd[p.name];const era=l?.era2026??p.era??4.5;const ip=l?.ip??p.ip??0;if(ip>0){tER+=(era/9)*ip;tIP+=ip;}} return tIP>=2?+((tER/tIP)*9).toFixed(2):4.3; } catch{return 4.3;}})();
       const bullpenERAAway = (() => { try { const db=loadRosterDB(),pd=loadLivePitcherERA(); const rp=Object.values(db).filter(p=>p.teamAbbr===away.id&&(p.role==="RP"||p.role==="CL")&&p.ip>0); let tIP=0,tER=0; for(const p of rp){const l=pd[p.name];const era=l?.era2026??p.era??4.5;const ip=l?.ip??p.ip??0;if(ip>0){tER+=(era/9)*ip;tIP+=ip;}} return tIP>=2?+((tER/tIP)*9).toFixed(2):4.3; } catch{return 4.3;}})();
       const weakBullpen     = Math.max(bullpenERAHome, bullpenERAAway) > 4.5 ? 0.15 : 0;
-      const hBullpenStress  = bullpenStressMultiplier(home.id);
-      const aBullpenStress  = bullpenStressMultiplier(away.id);
       const bullpenStress   = Math.max(hBullpenStress, aBullpenStress) > 1.05 ? 0.10 :
                               Math.max(hBullpenStress, aBullpenStress) > 1.02 ? 0.05 : 0;
       const windOut         = ctx?.weather && ctx.weather.wind >= 10 ? 0.10 : 0;
@@ -3252,8 +3251,6 @@ No explanation, no extra text, just the JSON array.`;
         });
       }
 
-      const ODDS_API_KEY = "af2ff1de807138a8224376918f1833f5";
-
       const FULL_NAME_TO_ABBR = {
         "Los Angeles Dodgers":"LAD","Atlanta Braves":"ATL","New York Yankees":"NYY",
         "Houston Astros":"HOU","Baltimore Orioles":"BAL","Philadelphia Phillies":"PHI",
@@ -3271,8 +3268,10 @@ No explanation, no extra text, just the JSON array.`;
 
       // Parse raw odds JSON array into our vegasOdds map
       async function fetchVegasOdds() {
+        const oddsApiKey = localStorage.getItem("mlb_odds_api_key") || "";
+        if (!oddsApiKey) { setVegasStatus("no odds API key set — add one in the sidebar"); return; }
         setVegasLoading(true); setVegasStatus("fetching…");
-        const apiUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey=${ODDS_API_KEY}&regions=us&markets=h2h,spreads,totals&oddsFormat=american&bookmakers=fanduel,draftkings`;
+        const apiUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey=${oddsApiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american&bookmakers=fanduel,draftkings`;
 
         let data = null;
         let statusMsg = "";
@@ -6222,6 +6221,39 @@ No explanation, no extra text, just the JSON array.`;
       );
     }
 
+    function SidebarOddsKey() {
+      const [key, setKey] = React.useState(localStorage.getItem("mlb_odds_api_key")||"");
+      const [editing, setEditing] = React.useState(!localStorage.getItem("mlb_odds_api_key"));
+      const [saved, setSaved] = React.useState(!!localStorage.getItem("mlb_odds_api_key"));
+      function save() {
+        if (!key.trim()) return;
+        localStorage.setItem("mlb_odds_api_key", key.trim());
+        setSaved(true); setEditing(false);
+      }
+      return (
+        <div style={{marginTop:"0.75rem",paddingTop:"0.75rem",borderTop:`1px solid ${C.border}`}}>
+          <div style={{fontSize:"0.62rem",color:C.gold,fontWeight:"bold",marginBottom:"0.35rem",letterSpacing:"0.06em"}}>🎲 ODDS API KEY</div>
+          {!editing ? (
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:"0.6rem",color:C.green}}>✓ Key saved</span>
+              <button onClick={()=>setEditing(true)} style={{fontSize:"0.6rem",color:C.dim,background:"none",border:`1px solid ${C.border}`,borderRadius:2,padding:"0.15rem 0.4rem",cursor:"pointer",fontFamily:"inherit"}}>Change</button>
+            </div>
+          ) : (
+            <div>
+              <div style={{fontSize:"0.58rem",color:C.dim,marginBottom:"0.3rem"}}>Paste your the-odds-api.com key. Stored locally only.</div>
+              <input
+                value={key}
+                onChange={e=>setKey(e.target.value)}
+                placeholder="odds api key..."
+                style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:3,padding:"0.3rem 0.45rem",color:C.text,fontSize:"0.68rem",fontFamily:"inherit",outline:"none",marginBottom:"0.3rem"}}
+              />
+              <button onClick={save} style={{width:"100%",background:C.gold,border:"none",borderRadius:3,color:"#111",padding:"0.35rem",cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem",fontWeight:"bold"}}>Save Key</button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function DebugPage() {
       const [log, setLog] = React.useState([]);
       const [running, setRunning] = React.useState(false);
@@ -6583,6 +6615,7 @@ No explanation, no extra text, just the JSON array.`;
                 <button onClick={refresh} disabled={loading} style={{width:"100%",padding:"0.45rem 0.75rem",background:"transparent",border:`1px solid ${refreshError?C.red:C.border}`,borderRadius:3,color:loading?C.dim:refreshError?C.red:C.muted,fontSize:"0.78rem",cursor:"pointer",fontFamily:"inherit",opacity:loading?0.6:1}}>{loading?"Refreshing…":refreshError?"Retry":"↻ Refresh Now"}</button>
                 {lastRefresh&&<div style={{fontSize:"0.6rem",color:C.dim,marginTop:"0.35rem"}}>Updated {lastRefresh.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}</div>}
                 <SidebarAIKey/>
+                <SidebarOddsKey/>
               </div>
             </aside>
             <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
