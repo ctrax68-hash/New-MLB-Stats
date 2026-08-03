@@ -7,7 +7,8 @@
     "test:ledger": "node tools/check-ledger.js",
     "golden:record": "node tools/golden.js record",
     "golden:verify": "node tools/golden.js verify",
-    "check": "npm run lint && npm run test:ledger && npm run golden:verify"
+    "check": "npm run lint && npm run test:ledger && npm run test:odds && npm run golden:verify",
+    "test:odds": "node tools/check-odds.js"
   },
   "repository": {
     "type": "git",

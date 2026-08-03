@@ -3091,6 +3091,80 @@ No explanation, no extra text, just the JSON array.`;
       );
     }
 
+    // ── Odds API budget management ───────────────────────────────
+    // The free tier allows 500 credits/month and each odds call costs
+    // 1 credit per region per market. GamblingPage unmounts on navigation,
+    // so without a cache every visit to the betting page spends credits.
+    // These helpers make the cache and the remaining balance explicit.
+    const ODDS_API_KEY_NAME = "mlb_odds_api_key";
+    const ODDS_CACHE_KEY    = "mlb_odds_cache";
+    const ODDS_QUOTA_KEY    = "mlb_odds_quota";
+    // Markets requested. `spreads` is deliberately excluded: run-line results are
+    // derived from the final margin, not from a posted price, so paying a credit
+    // per call for it buys nothing the app uses.
+    const ODDS_MARKETS      = "h2h,totals";
+    // Stop auto-fetching below this many remaining credits; manual refresh overrides.
+    const ODDS_MIN_CREDITS  = 20;
+    const ODDS_TTL_NEAR_MS  = 10 * 60 * 1000; // a game starts within the hour
+    const ODDS_TTL_FAR_MS   = 60 * 60 * 1000; // otherwise
+
+    function loadOddsCache() {
+      try {
+        const r = localStorage.getItem(ODDS_CACHE_KEY);
+        if (!r) return null;
+        const c = JSON.parse(r);
+        return (c && c.map && c.fetchedAt) ? c : null;
+      } catch { return null; }
+    }
+    function saveOddsCache(map) {
+      try { localStorage.setItem(ODDS_CACHE_KEY, JSON.stringify({fetchedAt: Date.now(), map})); } catch {}
+    }
+    function loadOddsQuota() {
+      try { return JSON.parse(localStorage.getItem(ODDS_QUOTA_KEY)) || {}; } catch { return {}; }
+    }
+    function saveOddsQuota(q) {
+      try { localStorage.setItem(ODDS_QUOTA_KEY, JSON.stringify(q)); } catch {}
+    }
+    // Pull the usage counters the API returns on every response. They are the
+    // only reliable way to tell "key rejected" apart from "quota exhausted",
+    // since the API answers 401 for both.
+    function readOddsQuotaHeaders(res) {
+      const num = h => { const v = res.headers?.get?.(h); const n = v==null?NaN:parseInt(v,10); return isNaN(n)?null:n; };
+      const remaining = num("x-requests-remaining");
+      const used      = num("x-requests-used");
+      const last      = num("x-requests-last");
+      if (remaining == null && used == null) return null;
+      const q = {remaining, used, last, at: Date.now()};
+      saveOddsQuota(q);
+      return q;
+    }
+    // Short TTL when a game is close to first pitch (lines move), long otherwise.
+    function oddsCacheTTL(games) {
+      try {
+        const now = Date.now();
+        const soon = (games||[]).some(g => {
+          const t = Date.parse(g.start_time);
+          return !isNaN(t) && t > now && t - now < 60*60*1000;
+        });
+        return soon ? ODDS_TTL_NEAR_MS : ODDS_TTL_FAR_MS;
+      } catch { return ODDS_TTL_FAR_MS; }
+    }
+    function fmtAge(ts) {
+      const mins = Math.max(0, Math.round((Date.now() - ts)/60000));
+      return mins < 1 ? "just now" : mins < 60 ? `${mins}m ago` : `${Math.round(mins/60)}h ago`;
+    }
+    // Verifies a key without spending credits — /v4/sports is not metered.
+    async function validateOddsKey(key) {
+      try {
+        const res = await fetch(`https://api.the-odds-api.com/v4/sports/?apiKey=${encodeURIComponent(key)}`);
+        if (res.ok) { readOddsQuotaHeaders(res); return {ok:true}; }
+        if (res.status === 401) return {ok:false, reason:"That key was rejected by the odds API."};
+        return {ok:false, reason:`Odds API returned ${res.status}.`};
+      } catch (e) {
+        return {ok:false, reason:`Could not reach the odds API (${e.message}).`};
+      }
+    }
+
     // ── Page: Daily Betting Lines ────────────────────────────────
     function GamblingPage() {
       const {teams,allGames,loading,refresh}=useLive();
@@ -3200,6 +3274,8 @@ No explanation, no extra text, just the JSON array.`;
       });
       const [vegasLoading,setVegasLoading]=useState(false);
       const [vegasStatus,setVegasStatus]=useState("");
+      // Non-null when the failure is user-fixable, so the UI can say where to fix it.
+      const [vegasFix,setVegasFix]=useState(null);
 
       useEffect(()=>{
         loadH2H().then(d=>setH2hData(d));
@@ -3263,31 +3339,75 @@ No explanation, no extra text, just the JSON array.`;
       const ABBR_TO_FULL = Object.fromEntries(Object.entries(FULL_NAME_TO_ABBR).map(([k,v])=>[v,k]));
 
       // Parse raw odds JSON array into our vegasOdds map
-      async function fetchVegasOdds() {
-        const oddsApiKey = localStorage.getItem("mlb_odds_api_key") || "";
-        if (!oddsApiKey) { setVegasStatus("no odds API key set — add one in the sidebar"); return; }
-        setVegasLoading(true); setVegasStatus("fetching…");
-        const apiUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey=${oddsApiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american&bookmakers=fanduel,draftkings`;
+      async function fetchVegasOdds(opts={}) {
+        const force = opts.force === true;
+        const oddsApiKey = localStorage.getItem(ODDS_API_KEY_NAME) || "";
+        if (!oddsApiKey) {
+          setVegasStatus("No odds API key — add one in the sidebar");
+          setVegasFix("sidebar");
+          return;
+        }
+
+        // Serve from cache unless the user explicitly asked to refresh. This is
+        // what stops a page revisit from costing credits.
+        if (!force) {
+          const cached = loadOddsCache();
+          if (cached && (Date.now() - cached.fetchedAt) < oddsCacheTTL(allGames)) {
+            setVegasOdds(cached.map);
+            setVegasFix(null);
+            setVegasStatus(`✓ ${Object.keys(cached.map).length} games · cached ${fmtAge(cached.fetchedAt)}`);
+            return;
+          }
+        }
+
+        // Budget guard: don't auto-spend the last of the month's credits.
+        const priorQuota = loadOddsQuota();
+        if (!force && priorQuota.remaining != null && priorQuota.remaining < ODDS_MIN_CREDITS) {
+          const cached = loadOddsCache();
+          if (cached) setVegasOdds(cached.map);
+          setVegasFix(null);
+          setVegasStatus(`Auto-refresh paused — ${priorQuota.remaining} credits left. Use ↻ Odds to override.`);
+          return;
+        }
+
+        setVegasLoading(true); setVegasStatus("fetching…"); setVegasFix(null);
+        const apiUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds/?apiKey=${encodeURIComponent(oddsApiKey)}&regions=us&markets=${ODDS_MARKETS}&oddsFormat=american&bookmakers=fanduel,draftkings`;
 
         let data = null;
         let statusMsg = "";
+        let fixHint = null;
         try {
           const res = await fetch(apiUrl);
+          const q = readOddsQuotaHeaders(res);
           if (res.ok) {
             data = await res.json();
-            statusMsg = `✓ ${Array.isArray(data)?data.length:0} games`;
+            const credits = q?.remaining != null ? ` · ${q.remaining} credits left` : "";
+            statusMsg = `✓ ${Array.isArray(data)?data.length:0} games${credits}`;
           } else {
             const errText = await res.text().catch(()=>"");
-            statusMsg = `API ${res.status}${errText.includes("quota")||errText.includes("limit")?" — quota exceeded":""}`;
+            const quotaGone = (q?.remaining === 0) || /quota|exceeded|usage/i.test(errText);
+            if (res.status === 401 && quotaGone) {
+              statusMsg = "Monthly odds credits exhausted — resets on the 1st";
+            } else if (res.status === 401) {
+              // 401 covers both a bad key and an exhausted plan, so say which.
+              statusMsg = "Odds API rejected the key — re-check it in the sidebar";
+              fixHint = "sidebar";
+            } else if (res.status === 429) {
+              statusMsg = "Rate limited by the odds API — try again shortly";
+            } else {
+              statusMsg = `Odds API error ${res.status}`;
+            }
           }
         } catch(e) {
-          // Try allorigins proxy
+          // Only a thrown error (network/CORS) reaches here; HTTP errors above do
+          // not. The proxy can help with CORS but cannot fix a bad key.
           try {
             const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(apiUrl)}`);
             if (res.ok) { const w = await res.json(); data = JSON.parse(w.contents); statusMsg = `✓ proxy ${Array.isArray(data)?data.length:0} games`; }
             else statusMsg = `proxy ${res.status}`;
-          } catch(e2) { statusMsg = `blocked (${e2.message})`; }
+          } catch(e2) { statusMsg = `Could not reach the odds API (${e2.message})`; }
         }
+        setVegasFix(fixHint);
 
         if (data && Array.isArray(data)) {
           const map = {};
@@ -3375,14 +3495,30 @@ No explanation, no extra text, just the JSON array.`;
             }
           }
           setVegasOdds(map);
+          // Cache so navigating back to this page doesn't spend more credits.
+          saveOddsCache(map);
         } else if (!data) {
           statusMsg = statusMsg || "no data";
+          // Show the last known lines rather than a slate of em-dashes, but say
+          // how old they are so a stale price is never read as a live one.
+          const cached = loadOddsCache();
+          if (cached) {
+            setVegasOdds(cached.map);
+            statusMsg += ` · showing lines from ${fmtAge(cached.fetchedAt)}`;
+          }
         }
         setVegasStatus(statusMsg);
         setVegasLoading(false);
       }
 
       useEffect(()=>{ fetchVegasOdds(); },[]);
+      // Re-fetch when a key is saved in the sidebar. Without this, correcting a
+      // rejected key appears to do nothing until a manual refresh.
+      useEffect(()=>{
+        function onKeySaved(){ fetchVegasOdds({force:true}); }
+        window.addEventListener("mlb-odds-key-saved", onKeySaved);
+        return ()=>window.removeEventListener("mlb-odds-key-saved", onKeySaved);
+      },[]);
 
       function getT(abbr){
         if (!abbr) return null;
@@ -3591,14 +3727,21 @@ No explanation, no extra text, just the JSON array.`;
           <SectionHeader>DAILY BETTING LINES <LiveBadge/></SectionHeader>
           <AIKeyBanner/>
           {autoPickStatus&&<div style={{fontSize:"0.65rem",color:C.gold,marginBottom:"0.5rem",display:"flex",alignItems:"center",gap:"0.4rem"}}><Dots/>{autoPickStatus}</div>}
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.75rem"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:vegasFix?"0.4rem":"0.75rem"}}>
             <span style={{fontSize:"0.65rem",color:vegasStatus.startsWith("✓")?C.green:vegasStatus?C.red:C.dim}}>
               Vegas: {vegasLoading?"fetching…":vegasStatus||"—"}
             </span>
-            <button onClick={fetchVegasOdds} disabled={vegasLoading} style={{fontSize:"0.65rem",color:C.gold,background:"none",border:`1px solid rgba(201,168,76,0.3)`,borderRadius:3,padding:"0.2rem 0.6rem",cursor:"pointer",fontFamily:"inherit",opacity:vegasLoading?0.5:1}}>
+            <button onClick={()=>fetchVegasOdds({force:true})} disabled={vegasLoading} style={{fontSize:"0.65rem",color:C.gold,background:"none",border:`1px solid rgba(201,168,76,0.3)`,borderRadius:3,padding:"0.2rem 0.6rem",cursor:"pointer",fontFamily:"inherit",opacity:vegasLoading?0.5:1}}>
               {vegasLoading?"…":"↻ Odds"}
             </button>
           </div>
+          {vegasFix==="sidebar" && (
+            <div style={{background:"rgba(224,96,96,0.08)",border:`1px solid rgba(224,96,96,0.25)`,borderRadius:5,padding:"0.6rem 0.8rem",marginBottom:"0.75rem",fontSize:"0.68rem",color:C.text}}>
+              <strong style={{color:C.red}}>Odds unavailable.</strong> Open the sidebar (☰) and paste a valid
+              key from <span style={{color:C.gold}}>the-odds-api.com</span> under <strong>ODDS API KEY</strong>.
+              Lines will reload automatically once it's saved.
+            </div>
+          )}
           <div style={{display:"flex",gap:"0.5rem",marginBottom:"1.25rem"}}>
             {[{id:"today",label:"Today",count:todayG.length},{id:"tomorrow",label:"Tomorrow",count:tomorrowG.length}].map(tab=>(
               <button key={tab.id} onClick={()=>setSelectedDay(tab.id)} style={{flex:1,padding:"0.7rem 1rem",borderRadius:6,cursor:"pointer",fontFamily:"inherit",background:selectedDay===tab.id?"rgba(201,168,76,0.12)":C.surface,border:`2px solid ${selectedDay===tab.id?C.gold:C.border}`,color:selectedDay===tab.id?C.goldLight:C.muted}}>
@@ -6020,32 +6163,57 @@ No explanation, no extra text, just the JSON array.`;
     }
 
     function SidebarOddsKey() {
-      const [key, setKey] = React.useState(localStorage.getItem("mlb_odds_api_key")||"");
-      const [editing, setEditing] = React.useState(!localStorage.getItem("mlb_odds_api_key"));
-      const [saved, setSaved] = React.useState(!!localStorage.getItem("mlb_odds_api_key"));
-      function save() {
-        if (!key.trim()) return;
-        localStorage.setItem("mlb_odds_api_key", key.trim());
-        setSaved(true); setEditing(false);
+      const [key, setKey] = React.useState(localStorage.getItem(ODDS_API_KEY_NAME)||"");
+      const [editing, setEditing] = React.useState(!localStorage.getItem(ODDS_API_KEY_NAME));
+      const [checking, setChecking] = React.useState(false);
+      const [error, setError] = React.useState(null);
+      const [quota, setQuota] = React.useState(loadOddsQuota());
+
+      // Verify against /v4/sports before storing. That endpoint is unmetered, so
+      // validation is free — and it means a saved key is a working key, rather
+      // than any non-empty string showing a misleading green tick.
+      async function save() {
+        const k = key.trim();
+        if (!k) return;
+        setChecking(true); setError(null);
+        const result = await validateOddsKey(k);
+        setChecking(false);
+        if (!result.ok) { setError(result.reason); return; }
+        localStorage.setItem(ODDS_API_KEY_NAME, k);
+        setQuota(loadOddsQuota());
+        setEditing(false);
+        // Let an open betting page reload immediately.
+        try { window.dispatchEvent(new Event("mlb-odds-key-saved")); } catch {}
       }
+
       return (
         <div style={{marginTop:"0.75rem",paddingTop:"0.75rem",borderTop:`1px solid ${C.border}`}}>
           <div style={{fontSize:"0.62rem",color:C.gold,fontWeight:"bold",marginBottom:"0.35rem",letterSpacing:"0.06em"}}>🎲 ODDS API KEY</div>
           {!editing ? (
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontSize:"0.6rem",color:C.green}}>✓ Key saved</span>
-              <button onClick={()=>setEditing(true)} style={{fontSize:"0.6rem",color:C.dim,background:"none",border:`1px solid ${C.border}`,borderRadius:2,padding:"0.15rem 0.4rem",cursor:"pointer",fontFamily:"inherit"}}>Change</button>
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:"0.6rem",color:C.green}}>✓ Key verified</span>
+                <button onClick={()=>setEditing(true)} style={{fontSize:"0.6rem",color:C.dim,background:"none",border:`1px solid ${C.border}`,borderRadius:2,padding:"0.15rem 0.4rem",cursor:"pointer",fontFamily:"inherit"}}>Change</button>
+              </div>
+              {quota.remaining!=null && (
+                <div style={{fontSize:"0.58rem",marginTop:"0.25rem",color:quota.remaining<=0?C.red:quota.remaining<ODDS_MIN_CREDITS?C.gold:C.dim}}>
+                  {quota.remaining} credits left{quota.used!=null?` · ${quota.used} used`:""}
+                </div>
+              )}
             </div>
           ) : (
             <div>
-              <div style={{fontSize:"0.58rem",color:C.dim,marginBottom:"0.3rem"}}>Paste your the-odds-api.com key. Stored locally only.</div>
+              <div style={{fontSize:"0.58rem",color:C.dim,marginBottom:"0.3rem"}}>Paste your the-odds-api.com key. Checked before saving; stored locally only.</div>
               <input
                 value={key}
-                onChange={e=>setKey(e.target.value)}
+                onChange={e=>{setKey(e.target.value); setError(null);}}
                 placeholder="odds api key..."
-                style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:3,padding:"0.3rem 0.45rem",color:C.text,fontSize:"0.68rem",fontFamily:"inherit",outline:"none",marginBottom:"0.3rem"}}
+                style={{width:"100%",background:C.bg,border:`1px solid ${error?C.red:C.border}`,borderRadius:3,padding:"0.3rem 0.45rem",color:C.text,fontSize:"0.68rem",fontFamily:"inherit",outline:"none",marginBottom:"0.3rem"}}
               />
-              <button onClick={save} style={{width:"100%",background:C.gold,border:"none",borderRadius:3,color:"#111",padding:"0.35rem",cursor:"pointer",fontFamily:"inherit",fontSize:"0.72rem",fontWeight:"bold"}}>Save Key</button>
+              {error && <div style={{fontSize:"0.58rem",color:C.red,marginBottom:"0.3rem"}}>{error}</div>}
+              <button onClick={save} disabled={checking} style={{width:"100%",background:C.gold,border:"none",borderRadius:3,color:"#111",padding:"0.35rem",cursor:checking?"default":"pointer",fontFamily:"inherit",fontSize:"0.72rem",fontWeight:"bold",opacity:checking?0.6:1}}>
+                {checking?"Checking…":"Verify & Save"}
+              </button>
             </div>
           )}
         </div>
@@ -6075,6 +6243,27 @@ No explanation, no extra text, just the JSON array.`;
           add(`roster v3 cache: ${rdb ? JSON.parse(rdb) && Object.keys(JSON.parse(rdb)).length + ' players' : 'empty'}`);
           add(`roster v2 cache: ${rdb2 ? Object.keys(JSON.parse(rdb2)).length + ' players' : 'empty'}`);
         } catch(e) { add(`localStorage error: ${e.message}`); }
+
+        // Test 0: Odds API key + quota. Uses the unmetered /v4/sports endpoint,
+        // so running diagnostics never costs credits.
+        add(`
+[${ts()}] Test 0: Odds API key/quota...`);
+        try {
+          const k = localStorage.getItem(ODDS_API_KEY_NAME) || "";
+          if (!k) {
+            add(`  No odds key set (sidebar → ODDS API KEY)`);
+          } else {
+            add(`  Key present: ${k.slice(0,4)}…${k.slice(-4)} (${k.length} chars)`);
+            const r = await validateOddsKey(k);
+            add(`  Key check: ${r.ok ? "VALID ✓" : "REJECTED — " + r.reason}`);
+            const q = loadOddsQuota();
+            if (q.remaining != null) add(`  Credits remaining: ${q.remaining}${q.used!=null?` (used ${q.used})`:""}`);
+            else add(`  Credits: unknown (no usage headers seen yet)`);
+          }
+          const cache = loadOddsCache();
+          add(`  Odds cache: ${cache ? `${Object.keys(cache.map).length} games, ${fmtAge(cache.fetchedAt)}` : "empty"}`);
+          add(`  Markets requested: ${ODDS_MARKETS} (${ODDS_MARKETS.split(",").length} credits/call)`);
+        } catch(e) { add(`  Odds check FAILED - ${e.message}`); }
 
         // Test 1: Basic MLB API
         add(`

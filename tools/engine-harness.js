@@ -37,6 +37,11 @@ const EXPORTED = [
   "computeConfROI", "kellyStake", "confidenceStake", "mlToProb", "mlToDecimal",
   // misc
   "localDateKey", "CLOSING_LINES_KEY", "OPEN_LINES_KEY", "REGULAR_SEASON_START",
+  // odds budget management
+  "loadOddsCache", "saveOddsCache", "loadOddsQuota", "saveOddsQuota",
+  "readOddsQuotaHeaders", "oddsCacheTTL", "fmtAge",
+  "ODDS_MARKETS", "ODDS_MIN_CREDITS", "ODDS_CACHE_KEY", "ODDS_QUOTA_KEY",
+  "ODDS_TTL_NEAR_MS", "ODDS_TTL_FAR_MS",
 ];
 
 function extractScript(html) {

@@ -22,6 +22,7 @@ export default [
         AbortController: "readonly", URLSearchParams: "readonly",
         requestAnimationFrame: "readonly", navigator: "readonly",
         location: "readonly", alert: "readonly", confirm: "readonly",
+        Event: "readonly", CustomEvent: "readonly",
         // libraries loaded via <script> tags in index.html
         React: "readonly", ReactDOM: "readonly", Babel: "readonly",
       },
