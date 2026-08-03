@@ -1,17 +1,18 @@
 {
   "name": "new-mlb-stats",
   "version": "1.0.0",
-  "description": "R.I.P. BERRYHORSE 🐐 (2017-2018)",
-  "main": "index.js",
+  "description": "MLB betting model — simulation engine, verification harness, and dashboard.",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "lint": "node tools/lint.js",
+    "test:ledger": "node tools/check-ledger.js",
+    "golden:record": "node tools/golden.js record",
+    "golden:verify": "node tools/golden.js verify",
+    "check": "npm run lint && npm run test:ledger && npm run golden:verify"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ctrax68-hash/new-mlb-stats.git"
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/ctrax68-hash/new-mlb-stats/issues"
@@ -21,5 +22,6 @@
     "@babel/core": "^8.0.1",
     "@babel/preset-react": "^8.0.1",
     "eslint": "^10.8.0"
-  }
+  },
+  "private": true
 }
